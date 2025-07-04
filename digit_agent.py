@@ -1,45 +1,45 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DigitAgent – number-CAPTCHA renaming agent
-=========================================
+DigitAgent v2 – number-CAPTCHA renaming agent
+============================================
 
-Klasördeki PNG dosyalarının üzerindeki rakamları
-Gemma-3 4B IT modeliyle çözer, <digits>_<orijinal_ad>.png
-şeklinde yeniden adlandırır.
+Özellikler
+----------
+• Kaynak klasördeki PNG'leri tarar
+• Gemma-3 4B IT modeline “What are the numbers?” sorusunu sorar
+• Yanıttaki JSON'dan `digits` alanını alır
+• Hedef klasöre <digits>.png adıyla kopyalar (collision → _1, _2 …)
+• HF pipeline (internet) veya GGUF (tam çevrimdışı) ile çalışır
 
 Kullanım
 --------
-# İnternet + Hugging Face ağırlıkları
-python digit_agent.py ./captchas
-
-# Çevrimdışı (GGUF)
-python digit_agent.py ./captchas --gguf models/gemma-3-4b-it-q4_K_M.gguf
-
-Ek seçenekler
--------------
---digits N   : Beklenen rakam uzunluğu (örn. 6)  
---sleep  s   : Sorgular arası bekleme süresi (varsayılan 0.2 s)
+python digit_agent.py <src_dir> <dst_dir>             # HF yolu
+python digit_agent.py <src_dir> <dst_dir> --gguf models/gemma-3-4b-it-Q4_K_M.gguf
 """
 
 from __future__ import annotations
-import argparse, re, time, logging, shutil, os
+import argparse, json, logging, os, re, shutil, time
 from pathlib import Path
 from typing import Optional
-from PIL import Image    # noqa : import zorunlu (vision modları bazen kontrol ediyor)
+from PIL import Image   # noqa: pillow vision modüllerini tetikler
 
-PROMPT = "<start_of_image> Bu görseldeki rakamları sırasıyla ve eksiksiz yaz."
+PROMPT = (
+    "<start_of_image>\nYou are a helpful vision agent.\n"
+    "Task: Identify the digits in this image.\n"
+    'Respond ONLY in JSON like {"digits": "123456"}'
+)
 
 logging.basicConfig(format="%(levelname)s  %(message)s", level=logging.INFO)
 
-# ─────────────────────  HF transformers yolu (FP16/BF16)  ───────────────────── #
+# ─────────────────────────── HF transformers yolu ────────────────────────── #
 
-def _hf_solver(img_path: Path, prompt: str) -> str:
+def _hf_solver(img_path: Path) -> str:
     from transformers import pipeline
     import torch
 
     pipe = _hf_solver._pipe
-    if pipe is None:                                    # ilk çağrıda modeli indir/yükle
+    if pipe is None:                                        # lazy-load
         pipe = pipeline(
             "image-text-to-text",
             model="google/gemma-3-4b-it",
@@ -48,82 +48,88 @@ def _hf_solver(img_path: Path, prompt: str) -> str:
             device_map="auto",
         )
         _hf_solver._pipe = pipe
-    return pipe(str(img_path), text=prompt, max_new_tokens=10)[0]["generated_text"]
+    return pipe(str(img_path), text=PROMPT, max_new_tokens=20)[0]["generated_text"]
 
 _hf_solver._pipe = None  # type: ignore
 
-
-# ─────────────────────────────  GGUF / llama.cpp yolu  ───────────────────────── #
+# ───────────────────────────── GGUF / llama.cpp yolu ─────────────────────── #
 
 class LlamaVision:
-    """GGUF quant ağırlıkları için basit vision arayüzü."""
-
     def __init__(self, model_path: str):
         from llama_cpp import Llama
         self.llm = Llama(
             model_path=model_path,
             n_ctx=4096,
             n_threads=os.cpu_count() or 8,
-            n_gpu_layers=35,   # GPU katmanı (VRAM yeterliyse)
+            n_gpu_layers=35,
         )
 
-    def __call__(self, img_path: Path, prompt: str) -> str:
+    def __call__(self, img_path: Path) -> str:
         with open(img_path, "rb") as f:
-            out = self.llm.create_completion(
-                prompt=prompt,
+            ans = self.llm.create_completion(
+                prompt=PROMPT,
                 images=[f.read()],
-                temperature=0.2,
-                max_tokens=8,
+                temperature=0.1,
+                max_tokens=20,
             )
-        return out["choices"][0]["text"]
+        return ans["choices"][0]["text"]
 
+# ───────────────────────────── Yardımcı fonksiyonlar ─────────────────────── #
 
-# ─────────────────────────────  Yardımcı fonksiyonlar  ───────────────────────── #
+_digits_rx = re.compile(r'\"digits\"\s*:\s*\"(\d+)\"')
 
-_rx_digits = re.compile(r"\d")
+def parse_digits(response: str) -> Optional[str]:
+    # 1) JSON parselemeyi dene
+    try:
+        data = json.loads(response)
+        if isinstance(data, dict) and "digits" in data:
+            return str(data["digits"])
+    except json.JSONDecodeError:
+        pass
+    # 2) Regex yedeği
+    m = _digits_rx.search(response)
+    return m.group(1) if m else None
 
-def extract_digits(text: str) -> str:
-    return "".join(_rx_digits.findall(text))
+def safe_copy(src: Path, dst_dir: Path, digits: str) -> Path:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    base = digits
+    counter = 0
+    while True:
+        new_name = f"{base}{f'_{counter}' if counter else ''}{src.suffix}"
+        dst_path = dst_dir / new_name
+        if not dst_path.exists():
+            shutil.copy2(src, dst_path)
+            return dst_path
+        counter += 1
 
-def rename(img: Path, digits: str) -> Path:
-    new_path = img.with_name(f"{digits}_{img.name}")
-    shutil.move(img, new_path)
-    return new_path
+# ──────────────────────────────────  Ana akış  ───────────────────────────── #
 
-
-# ────────────────────────────────  Ana iş akışı  ────────────────────────────── #
-
-def run(folder: Path, gguf: Optional[Path], expect_len: int, pause: float):
+def run(src_dir: Path, dst_dir: Path, gguf: Optional[Path], pause: float):
     solver = (
-        LlamaVision(str(gguf))
-        if gguf
-        else lambda p, q: _hf_solver(p, q)  # type: ignore
+        LlamaVision(str(gguf)) if gguf else lambda p: _hf_solver(p)  # type: ignore
     )
 
-    logging.info("🚀 DigitAgent başlıyor – mod: %s", "GGUF" if gguf else "HF pipeline")
+    logging.info("🚀 DigitAgent başlıyor – mod: %s",
+                 f"GGUF ({gguf})" if gguf else "HF pipeline")
 
-    for img in sorted(folder.glob("*.png")):
-        logging.info("🔍 %s inceleniyor…", img.name)
-        reply = solver(img, PROMPT)
-        digits = extract_digits(reply)
+    for img in sorted(src_dir.glob("*.png")):
+        logging.info("🔍 %s işleniyor…", img.name)
+        reply = solver(img).strip()
+        digits = parse_digits(reply)
 
-        if expect_len and len(digits) != expect_len:
-            logging.warning("❌ '%s' %d hane değil, atlandı.", reply, expect_len)
-            continue
         if not digits:
-            logging.warning("⚠️  Rakam bulunamadı, atlandı.")
+            logging.warning("⚠️  Rakam bulunamadı → yanıt: %s", reply)
             continue
 
-        new_path = rename(img, digits)
-        logging.info("✅ %s → %s", img.name, new_path.name)
+        copied = safe_copy(img, dst_dir, digits)
+        logging.info("✅ %s → %s", img.name, copied.name)
         time.sleep(pause)
 
-
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="DigitAgent – rakam çözücü/yeniden adlandırıcı")
-    ap.add_argument("folder", type=Path, help="PNG dosyalarının bulunduğu klasör")
+    ap = argparse.ArgumentParser(description="DigitAgent v2")
+    ap.add_argument("src", type=Path, help="Kaynak klasör (PNG'ler)")
+    ap.add_argument("dst", type=Path, help="Hedef klasör (yeniden adlandırılmış)")
     ap.add_argument("--gguf", type=Path, help="GGUF modeli (çevrimdışı kullanım)")
-    ap.add_argument("--digits", type=int, default=0, help="Beklenen rakam uzunluğu")
-    ap.add_argument("--sleep", type=float, default=0.2, help="Sorgular arası bekleme süresi (s)")
+    ap.add_argument("--sleep", type=float, default=0.2, help="Sorgular arası bekleme")
     args = ap.parse_args()
-    run(args.folder, args.gguf, args.digits, args.sleep)
+    run(args.src, args.dst, args.gguf, args.sleep)

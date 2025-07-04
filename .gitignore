@@ -4,7 +4,8 @@ __pycache__/
 *.py[cod]
 .vscode/
 .idea/
-
+captcha/
+*.png
 # Model ve önbellek
 models/
 *.gguf
