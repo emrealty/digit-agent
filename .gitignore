@@ -1,0 +1,14 @@
+# Ortam / IDE
+venv/
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+
+# Model ve önbellek
+models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+.cache/
