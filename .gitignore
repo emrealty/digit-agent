@@ -1,15 +1,14 @@
-# Ortam / IDE
-venv/
+# Jupyter/Colab
+.ipynb_checkpoints/
 __pycache__/
-*.py[cod]
-.vscode/
-.idea/
-captcha/
-*.png
-# Model ve önbellek
+
+# Sanal ortam
+venv/
+.env
+.env.*
+
+# Büyük veya hassas dosyalar
 models/
-*.gguf
-*.safetensors
-*.bin
-*.pt
 .cache/
+*.safetensors
+*.gguf

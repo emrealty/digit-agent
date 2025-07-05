@@ -1,12 +1,15 @@
-# 🤖🔢 DigitAgent v2
+# DigitAgent – Gemma-3 27B-IT Colab
 
-Kaynak klasördeki PNG'leri inceler, Gemma-3 4B IT modeline  
-**“What are the numbers?”** sorusunu sorar ve yanıtı  
-`{"digits": "123456"}` formatında alarak resmi **digits.png** adıyla hedef klasöre kopyalar.
+Bu repo, Google Generative AI API üzerinden **Gemma-3 27B-IT** (multimodal)
+modeliyle Google Drive’daki PNG **digit** görsellerini çözen Colab betiğini içerir.
 
-## Kurulum
+## Kurulum / Çalıştırma
 
-```bash
-cd /Users/emrealtay/Documents/digit-agent
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+1. **digit_agent_colab.py** dosyasını Colab’e yükleyin  
+2. Runtime ▸ **Change runtime type** (GPU gerekmez)  
+3. Sağ panel ▸ **Environments** ▸ **Add**  
+   *Key*: `GOOGLE_API_KEY`  *Value*: _sizin API anahtarınız_  
+4. **Runtime ▸ Run all**
+
+## Dizin Yapısı
+
